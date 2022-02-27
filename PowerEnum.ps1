@@ -507,3 +507,231 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
         }
     }
 }
+
+function Get-AccessibleReg {
+<#
+.SYNOPSIS
+
+Takes multiple strings containing registry paths and returns
+the registry paths with interesting access permissions.
+
+Author: Tobias Neitzel (@qtc_de)
+License: BSD 3-Clause  
+Required Dependencies: Get-UserSIDs
+Contains improvements by: Clément Labro (@itm4n)
+
+.DESCRIPTION
+
+Takes multiple registry paths and enumerates access permissions on them. Any path that
+matches the desired access mask is returned in a custom object that contains the
+accessible path, the owner, associated permission set, and the IdentityReference the
+interesting access permissions belongs to.
+
+The skeleton of this function is based on the implementation of the the PowerUp fork
+by @qtc_de (https://github.com/qtc-de/PowerSploit/blob/master/Privesc/PowerUp.ps1#L3423).
+It was developed before PrivescCheck by @itm4n became a well known tool, which implements
+a similar function (https://github.com/itm4n/PrivescCheck/blob/master/src/02_Helpers.ps1#L1633).
+The base functionality is obviously pretty similar to the Get-ModifiablePath from the original
+PowerUp script (https://github.com/PowerShellMafia/PowerSploit/blob/master/Privesc/PowerUp.ps1#L737)
+by Will Schroeder (@harmj0y).
+
+.PARAMETER Path
+
+The registry path to enumerate. Required
+
+.PARAMETER Principal
+
+String. The Principal to check for. This can be either a User Principal Name (UPN: user@domain)
+or the name of a local user account. User Principal Names can only be used when the system is
+connected to the associated domain. If this parameter is not specified, the ceck is executed against
+the permission set of the current user. When the Principal parameter is used, but left empty, the
+check is performed against a default list of groups where low privileged users are usually member
+of. Optional.
+
+.PARAMETER AccessMaskValue
+
+UInt32. Custom access mask to check permissions against. Optional.
+
+.PARAMETER Readable
+
+Switch. Also search for readable paths. This can be useful to audit keys where low privileged
+users should not have access to. Readable or writable paths within a protected key are still
+accessible by users that are not able to traverse or list the key due to the SeChangeNotifyPrivilege.
+This is different from Unix file permissions and often overlooked. Therefore, it is worth looking
+for. Optional.
+
+.EXAMPLE
+
+PS C:\> Get-ChildItem -Path Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\ -Recurse -ErrorAction SilentlyContinue | Get-AccessibleReg -Principal Carlos
+
+AccessiblePath                                                                       Owner                       IdentityReference                Permissions
+--------------                                                                       -----                       -----------------                -----------
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\BTAGService\Parameters\Settings NT SERVICE\TrustedInstaller NT AUTHORITY\INTERACTIVE         {CreateSubKey, SetValue, ReadPermissions}
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\BTAGService\Parameters\Settings NT SERVICE\TrustedInstaller NT AUTHORITY\Authenticated Users {CreateSubKey, SetValue, ReadPermissions}
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\embeddedmode\Parameters         NT AUTHORITY\SYSTEM         NT AUTHORITY\INTERACTIVE         {CreateSubKey, ReadPermissions, EnumerateSubKeys, QueryValue}
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\embeddedmode\Parameters         NT AUTHORITY\SYSTEM         NT AUTHORITY\Authenticated Users {CreateSubKey, ReadPermissions, Notify, EnumerateSubKeys...}
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\vds\Alignment                   NT AUTHORITY\SYSTEM         NT AUTHORITY\Authenticated Users {CreateSubKey, ReadPermissions, EnumerateSubKeys, QueryValue}
+
+.OUTPUTS
+
+PowerEnum.AccessiblePath
+
+Custom PSObject containing the Permissions, Owner, AccessiblePath and IdentityReference for
+a accessible registry path.
+#>
+    [OutputType('PowerEnum.AccessiblePath')]
+    [CmdletBinding()]
+    Param(
+        [Parameter(Position = 0, Mandatory = $True, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Alias('PSPath')]
+        [String[]]
+        $Path,
+
+        [String]
+        $Principal,
+
+        [UInt32]
+        $AccessMaskValue,
+
+        [Switch]
+        $Readable
+    )
+
+    BEGIN {
+        $AccessMask = @{
+             [uint32]'0x80000000' = 'GenericRead'
+             [uint32]'0x40000000' = 'GenericWrite'
+             [uint32]'0x20000000' = 'GenericExecute'
+             [uint32]'0x10000000' = 'GenericAll'
+             [uint32]'0x02000000' = 'MaximumAllowed'
+             [uint32]'0x00080000' = 'WriteOwner'
+             [uint32]'0x00040000' = 'WriteDAC'
+             [uint32]'0x00020000' = 'ReadPermissions'
+             [uint32]'0x00010000' = 'Delete'
+             [uint32]'0x00000020' = 'CreateLink'
+             [uint32]'0x00000010' = 'Notify'
+             [uint32]'0x00000008' = 'EnumerateSubKeys'
+             [uint32]'0x00000004' = 'CreateSubKey'
+             [uint32]'0x00000002' = 'SetValue'
+             [uint32]'0x00000001' = 'QueryValue'
+        }
+
+        # this is an xor of GenericWrite, GenericAll, MaximumAllowed, WriteOwner, WriteDAC, CreateSubKey, SetValue, CreateLink, Delete
+        $MAccessMask = 0x520d0026
+
+        if ($PSBoundParameters['Readable']) {
+            # add GenericRead, EnumerateSubkeys and QueryValue permissions
+            $MAccessMask = $MAccessMask -bxor 0x80000009
+
+        } elseif ($PSBoundParameters['AccessMaskValue']) {
+            $MAccessMask = $AccessMaskValue
+        }
+
+        if ($PSBoundParameters.ContainsKey('Principal')) {
+            $CurrentUserSids = Get-UserSIDs -Principal $Principal
+        } else {
+            $CurrentUserSids = Get-UserSIDs
+        }
+
+        $TranslatedIdentityReferences = @{}
+
+        function Get-Sid {
+
+            Param(
+                [String]$Identity
+            )
+
+            if ($Identity -match '^S-1-5.*' -or $Identity -match '^S-1-15-.*') {
+                $Identity
+
+            } else {
+
+                if ($TranslatedIdentityReferences -notcontains $Identity) {
+                    
+                    # When the SID translation fails, it is often because of identity names like
+                    # "APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES". These can often
+                    # still be resolved after stripping the prefix.
+                    try {
+                        $IdentityUser = New-Object System.Security.Principal.NTAccount($Identity)
+                        $TranslatedIdentityReferences[$Identity] = $IdentityUser.Translate([System.Security.Principal.SecurityIdentifier]).Value
+                    } catch [System.Security.Principal.IdentityNotMappedException] {
+                        $IdentityUser = New-Object System.Security.Principal.NTAccount($Identity | Split-Path -Leaf)
+                        $TranslatedIdentityReferences[$Identity] = $IdentityUser.Translate([System.Security.Principal.SecurityIdentifier]).Value
+                    }
+                }
+
+                $TranslatedIdentityReferences[$Identity]
+            }
+        }
+    }
+
+    PROCESS {
+
+        $Path | Sort-Object -Unique | ForEach-Object {
+
+            $CandidatePath = $_
+
+            if( -not ($CandidatePath.StartsWith("Microsoft.") -or $CandidatePath.StartsWith("Registry::"))  ) {
+                $CandidatePath = "Microsoft.PowerShell.Core\Registry::$($CandidatePath.replace(':',''))"
+            }
+
+            try {
+                # Get-Acl fails on paths containing special characters like '/' or '*'. Therefore, we use Get-Item.
+                $Key = Get-Item -LiteralPath $CandidatePath -ErrorAction Stop
+                $Acl = $Key.GetAccessControl()
+                $Owner = $Acl.Owner
+
+                if ($null -eq $Acl.Access) {
+                    $Out = New-Object -TypeName PSObject
+                    $Out | Add-Member -MemberType "NoteProperty" -Name "AccessiblePath" -Value ($CandidatePath -replace '.+::')
+                    $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
+                    $Out | Add-Member -MemberType "NoteProperty" -Name "IdentityReference" -Value "Everyone"
+                    $Out | Add-Member -MemberType "NoteProperty" -Name "Permissions" -Value "GenericAll"
+                    $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
+                    return $Out
+                }
+
+                else {
+                    $OwnerSid = Get-Sid $Owner
+
+                    # If we are owner, we have implicit full control over the object. Only the Owner property is imporant here, as the security group of an object
+                    # gets ignored (https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc961983(v=technet.10)?redirectedfrom=MSDN
+                    if( $CurrentUserSids -contains $OwnerSid ) {
+                        $Out = New-Object PSObject
+                        $Out | Add-Member -MemberType "NoteProperty" -Name "AccessiblePath" -Value ($CandidatePath -replace '.+::')
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'IdentityReference' -Value $Owner
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Permissions' -Value @('Owner')
+                        $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
+                        return $Out
+                    }
+                }
+
+            } catch [System.UnauthorizedAccessException] {
+                Write-Verbose "Skipping: $CandidatePath [Access Denied]"
+                continue
+            }
+
+            $Acl | Select-Object -ExpandProperty Access | Where-Object {($_.AccessControlType -match 'Allow')} | ForEach-Object {
+
+                $RegistryRights = $_.RegistryRights.value__
+
+                if( $RegistryRights -band $MAccessMask )  {
+
+                    $Permissions = $AccessMask.Keys | Where-Object { $RegistryRights -band $_ } | ForEach-Object { $AccessMask[$_] }
+                    $IdentitySid = Get-Sid $_.IdentityReference
+
+                    if ($CurrentUserSids -contains $IdentitySID) {
+                        $Out = New-Object PSObject
+                        $Out | Add-Member -MemberType "NoteProperty" -Name "AccessiblePath" -Value ($CandidatePath -replace '.+::')
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'IdentityReference' -Value $_.IdentityReference
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Permissions' -Value $Permissions
+                        $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.ModifiableReg')
+                        return $Out
+                    }
+                }
+            }
+        }
+    }
+}
