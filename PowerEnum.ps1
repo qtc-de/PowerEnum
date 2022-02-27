@@ -6,8 +6,6 @@ Logs a message to stdout.
 
 Author: Tobias Neitzel (@qtc_de)
 License: GPLv3
-Required Dependencies: None
-Optional Dependencies: None
 
 .DESCRIPTION
 
@@ -40,8 +38,6 @@ principal.
 
 Author: Tobias Neitzel (@qtc_de)
 License: GPLv3
-Required Dependencies: None
-Optional Dependencies: None
 
 .DESCRIPTION
 
@@ -148,7 +144,7 @@ Create a file system watcher.
 
 Author: Tobias Neitzel (@qtc_de)
 License: GPLv3
-Required Dependencies: None
+Required Dependencies: Log-It
 
 .DESCRIPTION
 
@@ -275,7 +271,7 @@ Checks for interesting access permissions within the file system.
 
 Author: Will Schroeder (@harmj0y)  
 License: BSD 3-Clause  
-Required Dependencies: None
+Required Dependencies: Get-UserSIDs
 EditedBy: Clément Labro (@itm4n) and Tobias Neitzel (@qtc_de)
 
 .DESCRIPTION
