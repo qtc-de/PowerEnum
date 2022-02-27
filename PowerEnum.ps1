@@ -218,14 +218,14 @@ PS C:\Users\Carlos> Start-Watcher .\Desktop -Copy C:\Users\Carlos\Documents\ -Re
 
     $Path = Resolve-Path $Path
     Log-It "Creating file system watcher."
-    $Watcher = New-Object IO.FileSystemWatcher $Path, $Pattern -Property @{ 
+    $Watcher = New-Object IO.FileSystemWatcher $Path, $Pattern -Property @{
         IncludeSubdirectories = $Recursive
         NotifyFilter = [IO.NotifyFilters]'FileName, LastWrite'
     }
 
     if ($PSBoundParameters.ContainsKey('Move')) {
         $PostProcessing = "Log-It `"Moving `$Path to $Move`";"
-        $PostProcessing += "Move-Item `"`$Path`" '$Move';" 
+        $PostProcessing += "Move-Item `"`$Path`" '$Move';"
     } elseif ($PSBoundParameters.ContainsKey('Copy')) {
         $PostProcessing = "Log-It `"Copying `$Path to $Copy`";"
         $PostProcessing += "Copy-Item -Recurse `"`$Path`" '$Copy';"
@@ -256,7 +256,7 @@ PS C:\Users\Carlos> Start-Watcher .\Desktop -Copy C:\Users\Carlos\Documents\ -Re
         Log-It "Starting Watcher. Press Ctrl+C to stop watching."
         Wait-Event
     }
-    
+
     finally {
         $Watcher.Dispose()
         Log-It "Watcher removed."
@@ -269,8 +269,8 @@ function Get-AccessiblePath {
 
 Checks for interesting access permissions within the file system.
 
-Author: Will Schroeder (@harmj0y)  
-License: BSD 3-Clause  
+Author: Will Schroeder (@harmj0y)
+License: BSD 3-Clause
 Required Dependencies: Get-UserSIDs
 EditedBy: Clément Labro (@itm4n) and Tobias Neitzel (@qtc_de)
 
@@ -324,8 +324,8 @@ for. Optional.
 
 PS C:\> Get-ChildItem C:\ProgramData -Force -Recurse -ErrorAction SilentlyContinue | Get-AccessiblePath
 
-AccessiblePath                                   Owner                  IdentityReference Permissions                                                                           
---------------                                   -----                  ----------------- -----------                                                                           
+AccessiblePath                                   Owner                  IdentityReference Permissions
+--------------                                   -----                  ----------------- -----------
 C:\ProgramData\chocolatey\logs\choco.summary.log BUILTIN\Administrators BUILTIN\Users     {WriteAttributes, Synchronize, AppendData/AddSubdirectory, WriteExtendedAttributes...}
 C:\ProgramData\chocolatey\logs\chocolatey.log    BUILTIN\Administrators BUILTIN\Users     {WriteAttributes, Synchronize, AppendData/AddSubdirectory, WriteExtendedAttributes...}
 ...
@@ -419,7 +419,7 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
             } else {
 
                 if ($TranslatedIdentityReferences -notcontains $Identity) {
-                    
+
                     # When the SID translation fails, it is often because of identity names like
                     # "APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES". These can often
                     # still be resolved after stripping the prefix.
@@ -440,7 +440,7 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
     PROCESS {
 
         $Path | Sort-Object -Unique | ForEach-Object {
-            
+
             $CandidatePath = $_
 
             try {
@@ -512,7 +512,7 @@ Takes multiple strings containing registry paths and returns
 the registry paths with interesting access permissions.
 
 Author: Tobias Neitzel (@qtc_de)
-License: BSD 3-Clause  
+License: BSD 3-Clause
 Required Dependencies: Get-UserSIDs
 Contains improvements by: Clément Labro (@itm4n)
 
@@ -643,7 +643,7 @@ a accessible registry path.
             } else {
 
                 if ($TranslatedIdentityReferences -notcontains $Identity) {
-                    
+
                     # When the SID translation fails, it is often because of identity names like
                     # "APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES". These can often
                     # still be resolved after stripping the prefix.
