@@ -31,6 +31,115 @@ Log-It "Log this message :)"
     Write-Host "[$Date] :: $Msg"
 }
 
+function Get-UserSIDs {
+<#
+.SYNOPSIS
+
+Helper function that obtains the SID values associated to the specified
+principal.
+
+Author: Tobias Neitzel (@qtc_de)
+License: GPLv3
+Required Dependencies: None
+Optional Dependencies: None
+
+.DESCRIPTION
+
+Obtains all SID values associated to the specified principal and returns them
+as an array. If the Principal parameter is not used, returns the SID values
+associated to the current user. The Principal parameter can either be a simple
+user name for local user accounts or a User Principal Name (UPN: user@domain)
+for domain accounts. Domain accounts can only be used when connected to the
+associated domain. When an empty string is specified for the Principal
+parameter, the function returns a set of SID values associated to groups
+that low privileged users are usually member of.
+
+.PARAMETER Principal
+
+Principal to obtain SID values for. If the Principal parameter is not used,
+obtain the SID values associated to the current user. The Principal parameter
+can either be a simple user name for local user accounts or a User Principal
+Name (UPN: user@domain) for domain accounts. Domain accounts can only be used
+when connected to the associated domain. When an empty string is specified for
+the Principal parameter, the function returns a set of SID values associated
+to groups that low privileged users are usually member of. Optional.
+
+.EXAMPLE
+
+PS C:\> Get-UserSids -Principal Carlos
+S-1-5-21-7623811015-3361044348-030300820-1005
+S-1-5-32-545
+S-1-1-0
+S-1-2-0
+S-1-5-4
+S-1-5-11
+S-1-5-15
+S-1-5-113
+S-1-5-64-10
+
+#>
+    Param (
+        [String]
+        $Principal
+    )
+
+    $CurrentUserSids = @()
+
+    if ($PSBoundParameters.ContainsKey('Principal')) {
+
+        if( $Principal -like "*@*" ) {
+            # If the specified principal is a full UPN, we attempt to resolve it using WindowsIdentity.
+            # This is the most reliable approach to get all available SID values, but seems only to work
+            # for AD users while connected to the AD.
+            try {
+                $UserIdentity = New-Object System.Security.Principal.WindowsIdentity($Principal)
+            } catch {
+                Write-Error "Unable to obtain WindowsIdentity for $Principal. Are you connected to the domain?"
+                break
+            }
+
+            $CurrentUserSids += $UserIdentity.Groups | Select-Object -ExpandProperty Value
+            $CurrentUserSids += $UserIdentity.User.Value
+        }
+
+        else {
+
+            if($Principal) {
+                # If a username was specified we attempt to resolve the users SID and the SIDs of local
+                # groups the user is member of.
+
+                try {
+                    $CurrentUserSids += @(Get-LocalUser $Principal -ErrorAction Stop | %{ $_.SID.Value })
+                } catch {
+                    Write-Error "User $Principal was not found on this system."
+                    break
+                }
+
+                $CurrentUserSids += Get-LocalGroup | Where-Object {
+                     Get-LocalGroupMember -Name $_.Name -Member $Principal -ErrorAction SilentlyContinue
+                 } | %{ $_.SID.Value }
+            }
+
+            # In any case, we add some default groups low privileged users are usually members of
+            $CurrentUserSids += "S-1-1-0"      # Everyone
+            $CurrentUserSids += "S-1-2-0"      # Local
+            $CurrentUserSids += "S-1-5-4"      # Interactive
+            $CurrentUserSids += "S-1-5-11"     # Authenticated Users
+            $CurrentUserSids += "S-1-5-15"     # This Organization
+            $CurrentUserSids += "S-1-5-113"    # Local Account
+            $CurrentUserSids += "S-1-5-64-10"  # NTLM Auth
+        }
+
+    } else {
+        # If the -Principal parameter was not used, we take the easy route and just use WindowsIdentity::GetCurrent
+        $UserIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $CurrentUserSids += $UserIdentity.Groups | Select-Object -ExpandProperty Value
+        $CurrentUserSids += $UserIdentity.User.Value
+    }
+
+    $CurrentUserSids| Sort-Object -Unique
+}
+
 function Start-Watcher {
 <#
 .SYNOPSIS
@@ -40,7 +149,6 @@ Create a file system watcher.
 Author: Tobias Neitzel (@qtc_de)
 License: GPLv3
 Required Dependencies: None
-Optional Dependencies: None
 
 .DESCRIPTION
 
@@ -167,7 +275,7 @@ Checks for interesting access permissions within the file system.
 
 Author: Will Schroeder (@harmj0y)  
 License: BSD 3-Clause  
-Required Dependencies: None  
+Required Dependencies: None
 EditedBy: Clément Labro (@itm4n) and Tobias Neitzel (@qtc_de)
 
 .DESCRIPTION
@@ -296,56 +404,9 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
         }
 
         if ($PSBoundParameters.ContainsKey('Principal')) {
-
-            if( $Principal -like "*@*" ) {
-                # If the specified principal is a full UPN, we attempt to resolve it using WindowsIdentity.
-                # This is the most reliable approach to get all available SID values, but seems only to work
-                # for AD users while connected to the AD.
-                try {
-                    $UserIdentity = New-Object System.Security.Principal.WindowsIdentity($Principal)
-                } catch {
-                    Write-Error "Unable to obtain WindowsIdentity for $Principal. Are you connected to the domain?"
-                    break
-                }
-
-                $CurrentUserSids = $UserIdentity.Groups | Select-Object -ExpandProperty Value
-                $CurrentUserSids += $UserIdentity.User.Value
-            }
-
-            else {
-                $CurrentUserSids = @()
-
-                if($Principal) {
-                    # If a username was specified we attempt to resolve the users SID and the SIDs of local
-                    # groups the user is member of.
-
-                    try {
-                        $CurrentUserSids += @(Get-LocalUser $Principal -ErrorAction Stop | %{ $_.SID.Value })
-                    } catch {
-                        Write-Error "User $Principal was not found on this system."
-                        break
-                    }
-
-                    $CurrentUserSids += Get-LocalGroup | Where-Object {
-                         Get-LocalGroupMember -Name $_.Name -Member $Principal -ErrorAction SilentlyContinue
-                     } | %{ $_.SID.Value }
-                }
-
-                # In any case, we add some default groups low privileged users are usually members of
-                $CurrentUserSids += "S-1-1-0"      # Everyone
-                $CurrentUserSids += "S-1-2-0"      # Local
-                $CurrentUserSids += "S-1-5-4"      # Interactive
-                $CurrentUserSids += "S-1-5-11"     # Authenticated Users
-                $CurrentUserSids += "S-1-5-15"     # This Organization
-                $CurrentUserSids += "S-1-5-113"    # Local Account
-                $CurrentUserSids += "S-1-5-64-10"  # NTLM Auth
-            }
-
+            $CurrentUserSids = Get-UserSIDs -Principal $Principal
         } else {
-            # If the -Principal parameter was not used, we take the easy route and just use WindowsIdentity::GetCurrent
-            $UserIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-            $CurrentUserSids = $UserIdentity.Groups | Select-Object -ExpandProperty Value
-            $CurrentUserSids += $UserIdentity.User.Value
+            $CurrentUserSids = Get-UserSIDs
         }
 
         $TranslatedIdentityReferences = @{}
@@ -389,29 +450,30 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
             try {
 
                 $Acl = Get-Acl -Path $CandidatePath -ErrorAction Stop
+                $Owner = $Acl.Owner;
 
                 # Check for NULL DACL first. If no DACL is set, 'Everyone' has full access on the object.
                 if ($null -eq $Acl.Access) {
                     $Out = New-Object -TypeName PSObject
                     $Out | Add-Member -MemberType "NoteProperty" -Name "AccessiblePath" -Value $CandidatePath
-                    $Out | Add-Member -MemberType "NoteProperty" -Name "IdentityReference" -Value (Convert-SidToName -Name "S-1-1-0")
+                    $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
+                    $Out | Add-Member -MemberType "NoteProperty" -Name "IdentityReference" -Value "Everyone"
                     $Out | Add-Member -MemberType "NoteProperty" -Name "Permissions" -Value "GenericAll"
                     $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
                     return $Out
                 }
 
                 else {
-                    $Owner = $Acl.Owner;
                     $OwnerSid = Get-Sid $Owner
 
                     # If we are owner, we have implicit full control over the object. Only the Owner property is imporant here, as the security group of an object
                     # gets ignored (https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc961983(v=technet.10)?redirectedfrom=MSDN
                     if( $CurrentUserSids -contains $OwnerSid ) {
                         $Out = New-Object PSObject
-                        $Out | Add-Member Noteproperty 'AccessiblePath' $CandidatePath
-                        $out | Add-Member Noteproperty 'Owner' $Owner
-                        $Out | Add-Member Noteproperty 'IdentityReference' $Owner
-                        $Out | Add-Member Noteproperty 'Permissions' @('Owner')
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'AccessiblePath' -Value $CandidatePath
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'IdentityReference' -Value $Owner
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Permissions' -Value @('Owner')
                         $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
                         return $Out
                     }
@@ -433,10 +495,10 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
 
                     if ($CurrentUserSids -contains $IdentitySID) {
                         $Out = New-Object PSObject
-                        $Out | Add-Member Noteproperty 'AccessiblePath' $CandidatePath
-                        $out | Add-Member Noteproperty 'Owner' $Owner
-                        $Out | Add-Member Noteproperty 'IdentityReference' $_.IdentityReference
-                        $Out | Add-Member Noteproperty 'Permissions' $Permissions
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'AccessiblePath' -Value $CandidatePath
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'IdentityReference' -Value $_.IdentityReference
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Permissions' -Value $Permissions
                         $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
                         return $Out
                     }
