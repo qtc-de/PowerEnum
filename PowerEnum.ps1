@@ -308,6 +308,26 @@ the permission set of the current user. When the Principal parameter is used, bu
 check is performed against a default list of groups where low privileged users are usually member
 of. Optional.
 
+.PARAMETER Principals
+
+String[]. Same as the Principal parameter, but accepts an array of principals.
+
+.PARAMETER Owner
+
+String. Only process files that are owned by the specified owner.
+
+.PARAMETER Owners
+
+String[]. Same as the Owner parameter, but accepts an array of owners.
+
+.PARAMETER ExcludeOwner
+
+String. Do not process files when they are owned by the specified owner.
+
+.PARAMETER ExcludeOwners
+
+String. Same as the ExludeOwner parameter, but accepts an array of owners.
+
 .PARAMETER AccessMaskValue
 
 UInt32. Custom access mask to check permissions against. Optional.
@@ -339,6 +359,18 @@ AccessiblePath                   Owner                  IdentityReference Permis
 C:\Users\Administrator\creds.txt BUILTIN\Administrators BUILTIN\Users     {ReadData, ReadAttributes, WriteData, WriteAttributes}
 ...
 
+.EXAMPLE
+
+PS C:\Users\carlos> Get-ChildItem .\AppData\Local\ -Recurse -Force -ErrorAction SilentlyContinue | Get-AccessiblePath -ExcludeOwner Carlos
+
+AccessiblePath                                                           Owner                  IdentityReference  Permissions
+--------------                                                           -----                  -----------------  -----------
+C:\Users\carlos\AppData\Local\Application Data                           BUILTIN\Administrators WINBOX\carlos      {WriteOwner, Delete, WriteAttributes, Synchronize...}
+C:\Users\carlos\AppData\Local\History                                    BUILTIN\Administrators WINBOX\carlos      {WriteOwner, Delete, WriteAttributes, Synchronize...}
+C:\Users\carlos\AppData\Local\Temporary Internet Files                   BUILTIN\Administrators WINBOX\carlos      {WriteOwner, Delete, WriteAttributes, Synchronize...}
+C:\Users\carlos\AppData\Local\Microsoft\Windows\Temporary Internet Files BUILTIN\Administrators WINBOX\carlos      {WriteOwner, Delete, WriteAttributes, Synchronize...}
+...
+
 .OUTPUTS
 
 PowerEnum.AccessiblePath
@@ -356,6 +388,21 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
         [String]
         $Principal,
 
+        [String[]]
+        $Principals,
+
+        [String]
+        $Owner,
+
+        [String[]]
+        $Owners,
+
+        [String]
+        $ExcludeOwner,
+
+        [String[]]
+        $ExcludeOwners,
+
         [UInt32]
         $AccessMaskValue,
 
@@ -364,6 +411,8 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
     )
 
     BEGIN {
+        $ErrorActionPreference = 'Stop'
+
         # from http://stackoverflow.com/questions/28029872/retrieving-security-descriptor-and-getting-number-for-filesystemrights
         $AccessMask = @{
             [UInt32]'0x80000000' = 'GenericRead'
@@ -399,10 +448,26 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
             $MAccessMask = $AccessMaskValue
         }
 
-        if ($PSBoundParameters.ContainsKey('Principal')) {
-            $CurrentUserSids = Get-UserSIDs -Principal $Principal
-        } else {
-            $CurrentUserSids = Get-UserSIDs
+        $TargetOwners = @()
+        $ExcludedOwners = @()
+        $CurrentUserSids = @()
+
+        ForEach ($Item in $( @($Principals, $Principal) |  ? { $_ } | sort -uniq )) {
+            $CurrentUserSids += Get-UserSIDs -Principal $Item
+        }
+
+        if ($CurrentUserSids.Length -eq 0) {
+            $CurrentUserSids += Get-UserSIDs
+        }
+
+        ForEach ($Item in $( @($Owners, $Owner) |  ? { $_ } | sort -uniq )) {
+            $Tmp = New-Object System.Security.Principal.NTAccount($Item)
+            $TargetOwners += $Tmp.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        }
+
+        ForEach ($Item in $( @($ExcludeOwners, $ExcludeOwner) |  ? { $_ } | sort -uniq )) {
+            $Tmp = New-Object System.Security.Principal.NTAccount($Item)
+            $ExcludedOwners += $Tmp.Translate([System.Security.Principal.SecurityIdentifier]).Value
         }
 
         $TranslatedIdentityReferences = @{}
@@ -438,16 +503,32 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
     }
 
     PROCESS {
-
+        $ErrorActionPreference = 'Continue'
         $Path | Sort-Object -Unique | ForEach-Object {
 
             $CandidatePath = $_
 
             try {
 
-                $Acl = Get-Acl -Path $CandidatePath -ErrorAction Stop
+                $Acl = Get-Acl -LiteralPath $CandidatePath -ErrorAction Stop
                 $Owner = $Acl.Owner;
+                $OwnerSid = Get-Sid $Owner
 
+                # If a desired owner was specified or if specific owners were excluded, just skip
+                if ($TargetOwners.Length -ne 0 -and $TargetOwners -notcontains $OwnerSid) { return }
+                if ($ExcludedOwners.Length -ne 0 -and $ExcludedOwners -contains $OwnerSid) { return }
+
+                # If we are owner, we have implicit full control over the object. Only the Owner property is imporant here, as the security group of an object
+                # gets ignored (https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc961983(v=technet.10)?redirectedfrom=MSDN
+                if ($CurrentUserSids -contains $OwnerSid) {
+                    $Out = New-Object PSObject
+                    $Out | Add-Member -MemberType "Noteproperty" -Name 'AccessiblePath' -Value $CandidatePath
+                    $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
+                    $Out | Add-Member -MemberType "Noteproperty" -Name 'IdentityReference' -Value $Owner
+                    $Out | Add-Member -MemberType "Noteproperty" -Name 'Permissions' -Value @('Owner')
+                    $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
+                    return $Out
+                }
                 # Check for NULL DACL first. If no DACL is set, 'Everyone' has full access on the object.
                 if ($null -eq $Acl.Access) {
                     $Out = New-Object -TypeName PSObject
@@ -457,22 +538,6 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
                     $Out | Add-Member -MemberType "NoteProperty" -Name "Permissions" -Value "GenericAll"
                     $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
                     return $Out
-                }
-
-                else {
-                    $OwnerSid = Get-Sid $Owner
-
-                    # If we are owner, we have implicit full control over the object. Only the Owner property is imporant here, as the security group of an object
-                    # gets ignored (https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc961983(v=technet.10)?redirectedfrom=MSDN
-                    if( $CurrentUserSids -contains $OwnerSid ) {
-                        $Out = New-Object PSObject
-                        $Out | Add-Member -MemberType "Noteproperty" -Name 'AccessiblePath' -Value $CandidatePath
-                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
-                        $Out | Add-Member -MemberType "Noteproperty" -Name 'IdentityReference' -Value $Owner
-                        $Out | Add-Member -MemberType "Noteproperty" -Name 'Permissions' -Value @('Owner')
-                        $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
-                        return $Out
-                    }
                 }
 
             } catch [System.UnauthorizedAccessException] {
