@@ -510,7 +510,7 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
 
             try {
 
-                $Acl = Get-Acl -LiteralPath $CandidatePath -ErrorAction Stop
+                $Acl = Get-Acl -LiteralPath $CandidatePath -ErrorAction Continue
                 $Owner = $Acl.Owner;
                 $OwnerSid = Get-Sid $Owner
 
@@ -526,6 +526,7 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
                     $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
                     $Out | Add-Member -MemberType "Noteproperty" -Name 'IdentityReference' -Value $Owner
                     $Out | Add-Member -MemberType "Noteproperty" -Name 'Permissions' -Value @('Owner')
+                    $Out | Add-Member -MemberType "Noteproperty" -Name 'LastWrite' -Value (Get-Item -Force $CandidatePath).LastWriteTime
                     $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
                     return $Out
                 }
@@ -536,6 +537,7 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
                     $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
                     $Out | Add-Member -MemberType "NoteProperty" -Name "IdentityReference" -Value "Everyone"
                     $Out | Add-Member -MemberType "NoteProperty" -Name "Permissions" -Value "GenericAll"
+                    $Out | Add-Member -MemberType "Noteproperty" -Name 'LastWrite' -Value (Get-Item -Force $CandidatePath).LastWriteTime
                     $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
                     return $Out
                 }
@@ -560,6 +562,7 @@ Custom PSObject containing the Permissions, Owner, AccesiblePath and IdentityRef
                         $Out | Add-Member -MemberType "Noteproperty" -Name 'Owner' -Value $Owner
                         $Out | Add-Member -MemberType "Noteproperty" -Name 'IdentityReference' -Value $_.IdentityReference
                         $Out | Add-Member -MemberType "Noteproperty" -Name 'Permissions' -Value $Permissions
+                        $Out | Add-Member -MemberType "Noteproperty" -Name 'LastWrite' -Value (Get-Item -Force $CandidatePath).LastWriteTime
                         $Out.PSObject.TypeNames.Insert(0, 'PowerEnum.AccessiblePath')
                         return $Out
                     }
@@ -677,8 +680,8 @@ a accessible registry path.
              [uint32]'0x00000001' = 'QueryValue'
         }
 
-        # this is an xor of GenericWrite, GenericAll, MaximumAllowed, WriteOwner, WriteDAC, CreateSubKey, SetValue, CreateLink, Delete
-        $MAccessMask = 0x520d0026
+        # this is an xor of GenericWrite, GenericAll, MaximumAllowed, WriteOwner, WriteDAC, CreateSubKey, SetValue, Delete
+        $MAccessMask = 0x520d0006
 
         if ($PSBoundParameters['Readable']) {
             # add GenericRead, EnumerateSubkeys and QueryValue permissions
